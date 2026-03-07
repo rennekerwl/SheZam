@@ -9,16 +9,19 @@ import kotlin.math.sin
 /**
  * Lightweight, deterministic fingerprinting for MVP/prototyping.
  *
- * This is intentionally simple:
- * - fixed FFT-size DFT per frame
- * - top-N spectral bins as local peaks
- * - pair adjacent peaks into compact hash tokens
+ * Tuned to reduce collisions:
+ * - fewer salient peaks per frame (lower fanout density)
+ * - salience floor to reject weak/noisy peaks
+ * - deterministic anchor/target pairing in a narrow target zone
+ * - no coarse quantization (raw bin + frame deltas)
  */
 class SimpleFingerprinter(
     private val sampleRate: Int = 16_000,
     private val frameSize: Int = 1024,
     private val hopSize: Int = 512,
-    private val topBinsPerFrame: Int = 5,
+    private val topBinsPerFrame: Int = 3,
+    private val peakSalienceThresholdRatio: Double = 0.45,
+    private val targetZoneMaxDeltaFrames: Int = 2,
 ) {
     fun fingerprint(samples: ShortArray): List<FingerprintToken> {
         if (samples.isEmpty()) return emptyList()
@@ -32,16 +35,28 @@ class SimpleFingerprinter(
             val start = frameIndex * hopSize
             val frame = mono.copyOfRange(start, min(start + frameSize, mono.size))
             val magnitudes = dftMagnitudes(pad(frame, frameSize))
-            peaksByFrame += topBins(magnitudes, topBinsPerFrame)
+            peaksByFrame += topSalientBins(magnitudes, topBinsPerFrame, peakSalienceThresholdRatio)
         }
 
         val tokens = mutableListOf<FingerprintToken>()
-        for (frame in peaksByFrame.indices) {
-            val peaks = peaksByFrame[frame]
-            for (i in 0 until peaks.lastIndex) {
-                val a = peaks[i]
-                val b = peaks[i + 1]
-                tokens += FingerprintToken(binA = a, binB = b, deltaFrames = 1, frame = frame)
+        for (anchorFrame in peaksByFrame.indices) {
+            val anchors = peaksByFrame[anchorFrame]
+            if (anchors.isEmpty()) continue
+
+            val maxTargetFrame = min(peaksByFrame.lastIndex, anchorFrame + targetZoneMaxDeltaFrames)
+            for (targetFrame in (anchorFrame + 1)..maxTargetFrame) {
+                val targets = peaksByFrame[targetFrame]
+                if (targets.isEmpty()) continue
+                for (anchorBin in anchors) {
+                    for (targetBin in targets) {
+                        tokens += FingerprintToken(
+                            binA = anchorBin,
+                            binB = targetBin,
+                            deltaFrames = targetFrame - anchorFrame,
+                            frame = anchorFrame,
+                        )
+                    }
+                }
             }
         }
         return tokens
@@ -80,13 +95,24 @@ class SimpleFingerprinter(
         return output
     }
 
-    private fun topBins(magnitudes: DoubleArray, count: Int): List<Int> =
-        magnitudes
+    private fun topSalientBins(
+        magnitudes: DoubleArray,
+        count: Int,
+        salienceThresholdRatio: Double,
+    ): List<Int> {
+        if (magnitudes.isEmpty()) return emptyList()
+        val maxMagnitude = magnitudes.maxOrNull() ?: return emptyList()
+        if (maxMagnitude <= 0.0) return emptyList()
+
+        val threshold = maxMagnitude * salienceThresholdRatio
+        return magnitudes
             .mapIndexed { index, value -> index to value }
+            .filter { it.second >= threshold }
             .sortedByDescending { it.second }
             .take(count)
             .map { it.first }
             .sorted()
+    }
 
     fun frequencyForBin(bin: Int): Double = bin.toDouble() * sampleRate / frameSize
 }
