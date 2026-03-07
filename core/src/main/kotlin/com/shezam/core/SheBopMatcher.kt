@@ -1,7 +1,8 @@
 package com.shezam.core
 
 class SheBopMatcher(
-    private val decisionThreshold: Double = 0.55,
+    private val decisionThreshold: Double = 0.2,
+    private val confidenceDenominatorCap: Int = 220,
 ) {
     fun match(observed: List<FingerprintToken>, reference: List<FingerprintToken>): MatchResult {
         if (observed.isEmpty() || reference.isEmpty()) {
@@ -21,7 +22,8 @@ class SheBopMatcher(
         }
 
         val strongest = votes.maxOfOrNull { it.value } ?: 0
-        val confidence = strongest.toDouble() / observed.size.toDouble()
+        val denominator = minOf(observed.size, reference.size, confidenceDenominatorCap).coerceAtLeast(1)
+        val confidence = (strongest.toDouble() / denominator.toDouble()).coerceIn(0.0, 1.0)
         return MatchResult(
             confidence = confidence,
             strongestOffsetVotes = strongest,
