@@ -32,4 +32,19 @@ class SheBopMatcherTest {
         val result = matcher.match(observed, reference)
         assertFalse(result.isMatch)
     }
+
+    @Test
+    fun `confidence reflects offset consistency and coverage`() {
+        val observed = (0 until 10).map {
+            FingerprintToken(binA = 10 + it, binB = 20 + it, deltaFrames = 1, frame = it)
+        }
+        val reference = observed + observed.map {
+            it.copy(frame = it.frame + 100)
+        }
+
+        val result = matcher.match(observed, reference)
+
+        assertTrue(result.confidence < 1.0)
+        assertTrue(result.confidence > 0.6)
+    }
 }
