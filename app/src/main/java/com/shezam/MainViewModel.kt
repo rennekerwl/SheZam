@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.shezam.core.FingerprintDatabase
 import com.shezam.core.FingerprintToken
+import com.shezam.core.LegacyFingerprinter
 import com.shezam.core.MatchResult
 import com.shezam.core.SheBopMatcher
 import com.shezam.core.SimpleFingerprinter
@@ -31,14 +32,17 @@ sealed interface UiState {
 class MainViewModel : ViewModel() {
     private val fingerprinter = SimpleFingerprinter()
     private val matcher = SheBopMatcher()
+    private val legacyFingerprinter = LegacyFingerprinter()
 
     private var sheBopReference: List<FingerprintToken> = emptyList()
+    private var useLegacyFingerprinter = false
 
     private val _uiState = MutableStateFlow<UiState>(UiState.Idle)
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
     fun loadReference(csv: String) {
         sheBopReference = FingerprintDatabase.fromCsv(csv)
+        useLegacyFingerprinter = sheBopReference.isNotEmpty() && sheBopReference.all { it.deltaFrames == 1 }
     }
 
     fun analyze(samples: ShortArray) {
@@ -46,7 +50,11 @@ class MainViewModel : ViewModel() {
             _uiState.value = UiState.Processing
             val result = withContext(Dispatchers.Default) {
                 val lowQuality = !fingerprinter.detectQuality(samples)
-                val observed = fingerprinter.fingerprint(samples)
+                val observed = if (useLegacyFingerprinter) {
+                    legacyFingerprinter.fingerprint(samples)
+                } else {
+                    fingerprinter.fingerprint(samples)
+                }
                 val match = matcher.match(observed, sheBopReference)
                 match to lowQuality
             }
