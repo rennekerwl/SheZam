@@ -11,6 +11,8 @@ import audioop
 import csv
 import math
 import pathlib
+import random
+import statistics
 import struct
 import sys
 import wave
@@ -20,8 +22,24 @@ from typing import Iterable
 SAMPLE_RATE = 16_000
 FRAME_SIZE = 1024
 HOP_SIZE = 512
-TOP_BINS_PER_FRAME = 5
+TOP_BINS_PER_FRAME = 3
+PEAK_SALIENCE_THRESHOLD_RATIO = 0.45
+TARGET_ZONE_MAX_DELTA_FRAMES = 2
+BIN_QUANTIZATION = 1
+DELTA_QUANTIZATION = 1
 DEFAULT_DECISION_THRESHOLD = 0.55
+
+
+@dataclass(frozen=True)
+class FingerprintParams:
+    sample_rate: int = SAMPLE_RATE
+    frame_size: int = FRAME_SIZE
+    hop_size: int = HOP_SIZE
+    top_bins_per_frame: int = TOP_BINS_PER_FRAME
+    peak_salience_threshold_ratio: float = PEAK_SALIENCE_THRESHOLD_RATIO
+    target_zone_max_delta_frames: int = TARGET_ZONE_MAX_DELTA_FRAMES
+    bin_quantization: int = BIN_QUANTIZATION
+    delta_quantization: int = DELTA_QUANTIZATION
 
 
 @dataclass(frozen=True)
@@ -30,6 +48,16 @@ class FingerprintToken:
     bin_b: int
     delta_frames: int
     frame: int
+
+
+BASELINE_COLLISION_PARAMS = FingerprintParams(
+    top_bins_per_frame=5,
+    peak_salience_threshold_ratio=0.0,
+    target_zone_max_delta_frames=4,
+    bin_quantization=4,
+    delta_quantization=2,
+)
+TUNED_COLLISION_PARAMS = FingerprintParams()
 
 
 def read_pcm16_mono_16k(path: pathlib.Path) -> list[int]:
@@ -113,41 +141,69 @@ def dft_magnitudes(frame: list[float]) -> list[float]:
     return output
 
 
-def top_bins(magnitudes: list[float], count: int) -> list[int]:
-    indexed = list(enumerate(magnitudes))
+def top_salient_bins(magnitudes: list[float], count: int, salience_threshold_ratio: float) -> list[int]:
+    if not magnitudes:
+        return []
+    max_magnitude = max(magnitudes)
+    if max_magnitude <= 0.0:
+        return []
+    threshold = max_magnitude * salience_threshold_ratio
+
+    indexed = [pair for pair in enumerate(magnitudes) if pair[1] >= threshold]
     indexed.sort(key=lambda pair: pair[1], reverse=True)
     return sorted(index for index, _ in indexed[:count])
 
 
-def fingerprint(samples: list[int]) -> list[FingerprintToken]:
+def quantize(value: int, quantum: int) -> int:
+    if quantum <= 1:
+        return value
+    return (value // quantum) * quantum
+
+
+def fingerprint(samples: list[int], params: FingerprintParams = FingerprintParams()) -> list[FingerprintToken]:
     if not samples:
         return []
 
     mono = normalize(samples)
-    frame_count = max(0, (len(mono) - FRAME_SIZE)) // HOP_SIZE + 1
+    frame_count = max(0, (len(mono) - params.frame_size)) // params.hop_size + 1
     if frame_count <= 0:
         return []
 
     peaks_by_frame: list[list[int]] = []
     for frame_index in range(frame_count):
-        start = frame_index * HOP_SIZE
-        frame = mono[start : min(start + FRAME_SIZE, len(mono))]
-        if len(frame) < FRAME_SIZE:
-            frame = frame + [0.0] * (FRAME_SIZE - len(frame))
+        start = frame_index * params.hop_size
+        frame = mono[start : min(start + params.frame_size, len(mono))]
+        if len(frame) < params.frame_size:
+            frame = frame + [0.0] * (params.frame_size - len(frame))
         magnitudes = dft_magnitudes(frame)
-        peaks_by_frame.append(top_bins(magnitudes, TOP_BINS_PER_FRAME))
+        peaks_by_frame.append(
+            top_salient_bins(
+                magnitudes,
+                params.top_bins_per_frame,
+                params.peak_salience_threshold_ratio,
+            )
+        )
 
     tokens: list[FingerprintToken] = []
-    for frame_index, peaks in enumerate(peaks_by_frame):
-        for i in range(len(peaks) - 1):
-            tokens.append(
-                FingerprintToken(
-                    bin_a=peaks[i],
-                    bin_b=peaks[i + 1],
-                    delta_frames=1,
-                    frame=frame_index,
-                )
-            )
+    for anchor_frame, anchors in enumerate(peaks_by_frame):
+        if not anchors:
+            continue
+        max_target = min(len(peaks_by_frame) - 1, anchor_frame + params.target_zone_max_delta_frames)
+        for target_frame in range(anchor_frame + 1, max_target + 1):
+            targets = peaks_by_frame[target_frame]
+            if not targets:
+                continue
+            delta_frames = quantize(target_frame - anchor_frame, params.delta_quantization)
+            for anchor_bin in anchors:
+                for target_bin in targets:
+                    tokens.append(
+                        FingerprintToken(
+                            bin_a=quantize(anchor_bin, params.bin_quantization),
+                            bin_b=quantize(target_bin, params.bin_quantization),
+                            delta_frames=delta_frames,
+                            frame=anchor_frame,
+                        )
+                    )
 
     return tokens
 
@@ -197,6 +253,83 @@ def match_confidence(observed: list[FingerprintToken], reference: list[Fingerpri
     return confidence, strongest
 
 
+def synth_tokens(seed: int, hard_negative: bool, params: FingerprintParams) -> list[FingerprintToken]:
+    rng = random.Random(seed)
+    frame_count = 60
+    tokens: list[FingerprintToken] = []
+    for frame in range(frame_count - params.target_zone_max_delta_frames - 1):
+        anchor_base = 32 + frame * 2
+        if hard_negative:
+            anchor_base += 1
+        for delta in range(1, params.target_zone_max_delta_frames + 1):
+            target_frame = frame + delta
+            for i in range(params.top_bins_per_frame):
+                anchor_bin = anchor_base + i * 7 + rng.randint(-1, 1)
+                target_bin = 72 + target_frame * 2 + i * 9 + rng.randint(-1, 1)
+                if hard_negative:
+                    # Negatives are near enough to collide under coarse quantization.
+                    anchor_bin += rng.choice((-2, 2))
+                    target_bin += rng.choice((-2, 2))
+                tokens.append(
+                    FingerprintToken(
+                        bin_a=quantize(anchor_bin, params.bin_quantization),
+                        bin_b=quantize(target_bin, params.bin_quantization),
+                        delta_frames=quantize(delta, params.delta_quantization),
+                        frame=frame,
+                    )
+                )
+    return tokens
+
+
+def distribution(values: list[int]) -> str:
+    if not values:
+        return "n=0"
+    p90 = sorted(values)[max(0, math.ceil(0.9 * len(values)) - 1)]
+    return (
+        f"n={len(values)} min={min(values)} p50={statistics.median(values):.1f} "
+        f"p90={p90} max={max(values)} mean={statistics.mean(values):.2f}"
+    )
+
+
+def collision_report(output_path: pathlib.Path) -> None:
+    groups = {
+        "positive": lambda i, p: synth_tokens(seed=100 + i, hard_negative=False, params=p),
+        "hard_negative": lambda i, p: synth_tokens(seed=200 + i, hard_negative=True, params=p),
+    }
+
+    rows: list[tuple[str, str, float, int]] = []
+    sections: list[str] = []
+    for label, params in (("before", BASELINE_COLLISION_PARAMS), ("after", TUNED_COLLISION_PARAMS)):
+        ref_tokens = synth_tokens(seed=7, hard_negative=False, params=params)
+        sections.append(f"## {label.title()} tuning")
+        sections.append(f"reference_tokens={len(ref_tokens)}")
+        for group_name, generator in groups.items():
+            votes: list[int] = []
+            confidences: list[float] = []
+            for i in range(20):
+                observed = generator(i, params)
+                confidence, strongest = match_confidence(observed, ref_tokens)
+                votes.append(strongest)
+                confidences.append(confidence)
+                rows.append((label, group_name, confidence, strongest))
+            sections.append(
+                f"- {group_name}: votes[{distribution(votes)}] "
+                f"confidence[min={min(confidences):.3f} p50={statistics.median(confidences):.3f} "
+                f"max={max(confidences):.3f}]"
+            )
+        sections.append("")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    report = "# Fingerprint collision validation\n\n" + "\n".join(sections)
+    output_path.write_text(report, encoding="utf-8")
+
+    csv_path = output_path.with_suffix(".csv")
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["version", "group", "confidence", "votes"])
+        writer.writerows(rows)
+
+
 def cmd_generate(args: argparse.Namespace) -> int:
     samples = read_pcm16_mono_16k(pathlib.Path(args.input_wav))
     tokens = fingerprint(samples)
@@ -231,6 +364,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_collision_report(args: argparse.Namespace) -> int:
+    out = pathlib.Path(args.output_report)
+    collision_report(out)
+    print(f"Wrote collision report to {out} and {out.with_suffix('.csv')}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -245,6 +385,17 @@ def build_parser() -> argparse.ArgumentParser:
     val.add_argument("positive_clips_dir")
     val.add_argument("--threshold", type=float, default=DEFAULT_DECISION_THRESHOLD)
     val.set_defaults(func=cmd_validate)
+
+    report = subparsers.add_parser(
+        "collision-report",
+        help="Generate synthetic positive vs hard-negative vote distributions before/after tuning",
+    )
+    report.add_argument(
+        "--output-report",
+        default="tools/reports/she_bop_collision_report.md",
+        help="Path to markdown report output",
+    )
+    report.set_defaults(func=cmd_collision_report)
 
     return parser
 
