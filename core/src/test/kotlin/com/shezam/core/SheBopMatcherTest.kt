@@ -1,6 +1,7 @@
 package com.shezam.core
 
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -30,6 +31,27 @@ class SheBopMatcherTest {
         }
 
         val result = matcher.match(observed, reference)
+        assertFalse(result.isMatch)
+    }
+
+    @Test
+    fun `duplicate reference hashes do not inflate confidence`() {
+        val repeatedHashFrame = 42
+        val repeatedHash = FingerprintToken(binA = 1, binB = 2, deltaFrames = 3, frame = repeatedHashFrame)
+        val reference = List(100) { repeatedHash }
+
+        val observed = listOf(
+            FingerprintToken(binA = 1, binB = 2, deltaFrames = 3, frame = repeatedHashFrame),
+            FingerprintToken(binA = 100, binB = 200, deltaFrames = 1, frame = 10),
+            FingerprintToken(binA = 101, binB = 201, deltaFrames = 1, frame = 20),
+            FingerprintToken(binA = 102, binB = 202, deltaFrames = 1, frame = 30),
+            FingerprintToken(binA = 103, binB = 203, deltaFrames = 1, frame = 40),
+        )
+
+        val result = matcher.match(observed, reference)
+
+        assertEquals(1, result.strongestOffsetVotes)
+        assertEquals(0.2, result.confidence)
         assertFalse(result.isMatch)
     }
 }
