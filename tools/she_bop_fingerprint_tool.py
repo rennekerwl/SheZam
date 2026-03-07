@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import warnings
+
+warnings.filterwarnings("ignore", message=".*audioop.*deprecated.*", category=DeprecationWarning)
+import audioop
 import csv
 import math
 import pathlib
@@ -34,16 +38,59 @@ def read_pcm16_mono_16k(path: pathlib.Path) -> list[int]:
         sample_width = wav.getsampwidth()
         sample_rate = wav.getframerate()
         frame_count = wav.getnframes()
+        comp_type = wav.getcomptype()
 
-        if channels != 1 or sample_width != 2 or sample_rate != SAMPLE_RATE:
-            raise ValueError(
-                f"Expected 16-bit PCM mono {SAMPLE_RATE} Hz WAV, got channels={channels}, "
-                f"sample_width={sample_width * 8}-bit, sample_rate={sample_rate}"
-            )
+        if comp_type != "NONE":
+            raise ValueError(f"Only uncompressed PCM WAV is supported, got comp_type={comp_type}")
 
         data = wav.readframes(frame_count)
 
+    data = convert_to_pcm16_mono_16k(
+        data=data,
+        channels=channels,
+        sample_width=sample_width,
+        sample_rate=sample_rate,
+    )
+
+    frame_count = len(data) // 2
+    if frame_count == 0:
+        return []
+
     return list(struct.unpack("<" + "h" * frame_count, data))
+
+
+def convert_to_pcm16_mono_16k(
+    *,
+    data: bytes,
+    channels: int,
+    sample_width: int,
+    sample_rate: int,
+) -> bytes:
+    if sample_width not in (1, 2, 3, 4):
+        raise ValueError(f"Unsupported PCM sample width: {sample_width * 8}-bit")
+
+    if channels < 1:
+        raise ValueError(f"Invalid channel count: {channels}")
+
+    converted = data
+
+    if channels != 1:
+        converted = audioop.tomono(converted, sample_width, 0.5, 0.5)
+
+    if sample_rate != SAMPLE_RATE:
+        converted, _ = audioop.ratecv(
+            converted,
+            sample_width,
+            1,
+            sample_rate,
+            SAMPLE_RATE,
+            None,
+        )
+
+    if sample_width != 2:
+        converted = audioop.lin2lin(converted, sample_width, 2)
+
+    return converted
 
 
 def normalize(samples: list[int]) -> list[float]:
