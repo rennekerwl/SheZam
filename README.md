@@ -16,7 +16,9 @@ This repository now contains a working Android MVP scaffold based on `APP_PLAN.m
 
 ## Fingerprint asset generation and validation
 
-Use `tools/she_bop_fingerprint_tool.py` to generate `she_bop_fingerprints.csv` with the **same algorithm and parameters used at runtime** (`SimpleFingerprinter`: 16 kHz, frame size 1024, hop size 512, top 5 bins).
+Use `tools/she_bop_fingerprint_tool.py` to generate `she_bop_fingerprints.csv` with the **same algorithm and parameters used at runtime** (`SimpleFingerprinter`: 16 kHz, frame size 1024, hop size 512, top 8 local peaks, Hann window, log magnitudes, anchor-target hashes).
+
+> If you change fingerprinting parameters, regenerate the CSV asset before running the app. Runtime and reference generation must stay aligned.
 
 1. Acquire a legally sourced She Bop reference recording.
 2. Run generation directly on your WAV file. The tool auto-converts PCM WAV input to mono 16-bit 16 kHz internally (for example from stereo 44.1 kHz):

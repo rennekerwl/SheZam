@@ -20,7 +20,12 @@ from typing import Iterable
 SAMPLE_RATE = 16_000
 FRAME_SIZE = 1024
 HOP_SIZE = 512
-TOP_BINS_PER_FRAME = 5
+TOP_BINS_PER_FRAME = 8
+ANCHOR_PEAKS_PER_FRAME = 3
+TARGET_PEAKS_PER_FRAME = 3
+TARGET_ZONE_FRAMES = 8
+QUANTIZED_BIN_SIZE = 2
+QUANTIZED_DELTA_SIZE = 2
 DEFAULT_DECISION_THRESHOLD = 0.55
 
 
@@ -113,10 +118,45 @@ def dft_magnitudes(frame: list[float]) -> list[float]:
     return output
 
 
+def apply_hann_window(frame: list[float]) -> list[float]:
+    n = len(frame)
+    if n <= 1:
+        return frame
+    return [frame[i] * (0.5 * (1.0 - math.cos(2.0 * math.pi * i / float(n - 1)))) for i in range(n)]
+
+
 def top_bins(magnitudes: list[float], count: int) -> list[int]:
     indexed = list(enumerate(magnitudes))
     indexed.sort(key=lambda pair: pair[1], reverse=True)
     return sorted(index for index, _ in indexed[:count])
+
+
+def bin_for_frequency(frequency_hz: float) -> int:
+    return max(1, int(frequency_hz * FRAME_SIZE / float(SAMPLE_RATE)))
+
+
+def local_peaks(magnitudes: list[float], count: int) -> list[int]:
+    min_bin = bin_for_frequency(300.0)
+    max_bin = min(len(magnitudes) - 2, bin_for_frequency(5000.0))
+    if max_bin <= min_bin:
+        return top_bins(magnitudes, count)
+
+    peaks = [
+        (bin_index, magnitudes[bin_index])
+        for bin_index in range(min_bin, max_bin + 1)
+        if magnitudes[bin_index] > magnitudes[bin_index - 1] and magnitudes[bin_index] >= magnitudes[bin_index + 1]
+    ]
+    peaks.sort(key=lambda pair: pair[1], reverse=True)
+    bins = sorted(bin_index for bin_index, _ in peaks[:count])
+    return bins if bins else top_bins(magnitudes, count)
+
+
+def quantize_bin(bin_index: int) -> int:
+    return bin_index // QUANTIZED_BIN_SIZE
+
+
+def quantize_delta(delta_frames: int) -> int:
+    return ((delta_frames - 1) // QUANTIZED_DELTA_SIZE) + 1
 
 
 def fingerprint(samples: list[int]) -> list[FingerprintToken]:
@@ -134,20 +174,35 @@ def fingerprint(samples: list[int]) -> list[FingerprintToken]:
         frame = mono[start : min(start + FRAME_SIZE, len(mono))]
         if len(frame) < FRAME_SIZE:
             frame = frame + [0.0] * (FRAME_SIZE - len(frame))
-        magnitudes = dft_magnitudes(frame)
-        peaks_by_frame.append(top_bins(magnitudes, TOP_BINS_PER_FRAME))
+        magnitudes = dft_magnitudes(apply_hann_window(frame))
+        log_magnitudes = [math.log(1.0 + value) for value in magnitudes]
+        peaks_by_frame.append(local_peaks(log_magnitudes, TOP_BINS_PER_FRAME))
 
     tokens: list[FingerprintToken] = []
     for frame_index, peaks in enumerate(peaks_by_frame):
-        for i in range(len(peaks) - 1):
-            tokens.append(
-                FingerprintToken(
-                    bin_a=peaks[i],
-                    bin_b=peaks[i + 1],
-                    delta_frames=1,
-                    frame=frame_index,
-                )
-            )
+        anchors = peaks[:ANCHOR_PEAKS_PER_FRAME]
+        if not anchors:
+            continue
+
+        for delta in range(1, TARGET_ZONE_FRAMES + 1):
+            target_frame = frame_index + delta
+            if target_frame >= len(peaks_by_frame):
+                break
+
+            targets = peaks_by_frame[target_frame][:TARGET_PEAKS_PER_FRAME]
+            if not targets:
+                continue
+
+            for anchor_bin in anchors:
+                for target_bin in targets:
+                    tokens.append(
+                        FingerprintToken(
+                            bin_a=quantize_bin(anchor_bin),
+                            bin_b=quantize_bin(target_bin),
+                            delta_frames=quantize_delta(delta),
+                            frame=frame_index,
+                        )
+                    )
 
     return tokens
 
