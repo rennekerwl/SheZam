@@ -21,6 +21,7 @@ SAMPLE_RATE = 16_000
 FRAME_SIZE = 1024
 HOP_SIZE = 512
 TOP_BINS_PER_FRAME = 5
+QUANTIZED_BIN_SIZE = 1
 DEFAULT_DECISION_THRESHOLD = 0.55
 
 
@@ -116,7 +117,7 @@ def dft_magnitudes(frame: list[float]) -> list[float]:
 def top_bins(magnitudes: list[float], count: int) -> list[int]:
     indexed = list(enumerate(magnitudes))
     indexed.sort(key=lambda pair: pair[1], reverse=True)
-    return sorted(index for index, _ in indexed[:count])
+    return sorted(index // QUANTIZED_BIN_SIZE for index, _ in indexed[:count])
 
 
 def fingerprint(samples: list[int]) -> list[FingerprintToken]:

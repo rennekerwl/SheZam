@@ -19,6 +19,7 @@ class SimpleFingerprinter(
     private val frameSize: Int = 1024,
     private val hopSize: Int = 512,
     private val topBinsPerFrame: Int = 5,
+    private val quantizedBinSize: Int = 1,
 ) {
     fun fingerprint(samples: ShortArray): List<FingerprintToken> {
         if (samples.isEmpty()) return emptyList()
@@ -85,7 +86,7 @@ class SimpleFingerprinter(
             .mapIndexed { index, value -> index to value }
             .sortedByDescending { it.second }
             .take(count)
-            .map { it.first }
+            .map { it.first / quantizedBinSize }
             .sorted()
 
     fun frequencyForBin(bin: Int): Double = bin.toDouble() * sampleRate / frameSize
