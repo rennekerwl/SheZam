@@ -1,7 +1,7 @@
 package com.shezam.core
 
 class SheBopMatcher(
-    private val decisionThreshold: Double = 0.55,
+    private val decisionThreshold: Double = 0.1,
 ) {
     fun match(observed: List<FingerprintToken>, reference: List<FingerprintToken>): MatchResult {
         if (observed.isEmpty() || reference.isEmpty()) {
