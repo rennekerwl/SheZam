@@ -21,6 +21,7 @@ SAMPLE_RATE = 16_000
 FRAME_SIZE = 1024
 HOP_SIZE = 512
 TOP_BINS_PER_FRAME = 5
+TARGET_ZONE_FRAMES = 4
 DEFAULT_DECISION_THRESHOLD = 0.55
 
 
@@ -138,16 +139,26 @@ def fingerprint(samples: list[int]) -> list[FingerprintToken]:
         peaks_by_frame.append(top_bins(magnitudes, TOP_BINS_PER_FRAME))
 
     tokens: list[FingerprintToken] = []
-    for frame_index, peaks in enumerate(peaks_by_frame):
-        for i in range(len(peaks) - 1):
-            tokens.append(
-                FingerprintToken(
-                    bin_a=peaks[i],
-                    bin_b=peaks[i + 1],
-                    delta_frames=1,
-                    frame=frame_index,
-                )
-            )
+    for anchor_frame, anchor_peaks in enumerate(peaks_by_frame):
+        if not anchor_peaks:
+            continue
+
+        max_target_frame = min(anchor_frame + TARGET_ZONE_FRAMES, len(peaks_by_frame) - 1)
+        for target_frame in range(anchor_frame + 1, max_target_frame + 1):
+            target_peaks = peaks_by_frame[target_frame]
+            if not target_peaks:
+                continue
+
+            for bin_a in anchor_peaks:
+                for bin_b in target_peaks:
+                    tokens.append(
+                        FingerprintToken(
+                            bin_a=bin_a,
+                            bin_b=bin_b,
+                            delta_frames=target_frame - anchor_frame,
+                            frame=anchor_frame,
+                        )
+                    )
 
     return tokens
 

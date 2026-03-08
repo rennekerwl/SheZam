@@ -19,6 +19,7 @@ class SimpleFingerprinter(
     private val frameSize: Int = 1024,
     private val hopSize: Int = 512,
     private val topBinsPerFrame: Int = 5,
+    private val targetZoneFrames: Int = 4,
 ) {
     fun fingerprint(samples: ShortArray): List<FingerprintToken> {
         if (samples.isEmpty()) return emptyList()
@@ -36,12 +37,25 @@ class SimpleFingerprinter(
         }
 
         val tokens = mutableListOf<FingerprintToken>()
-        for (frame in peaksByFrame.indices) {
-            val peaks = peaksByFrame[frame]
-            for (i in 0 until peaks.lastIndex) {
-                val a = peaks[i]
-                val b = peaks[i + 1]
-                tokens += FingerprintToken(binA = a, binB = b, deltaFrames = 1, frame = frame)
+        for (anchorFrame in peaksByFrame.indices) {
+            val anchorPeaks = peaksByFrame[anchorFrame]
+            if (anchorPeaks.isEmpty()) continue
+
+            val maxTargetFrame = min(anchorFrame + targetZoneFrames, peaksByFrame.lastIndex)
+            for (targetFrame in (anchorFrame + 1)..maxTargetFrame) {
+                val targetPeaks = peaksByFrame[targetFrame]
+                if (targetPeaks.isEmpty()) continue
+
+                for (a in anchorPeaks) {
+                    for (b in targetPeaks) {
+                        tokens += FingerprintToken(
+                            binA = a,
+                            binB = b,
+                            deltaFrames = targetFrame - anchorFrame,
+                            frame = anchorFrame,
+                        )
+                    }
+                }
             }
         }
         return tokens
