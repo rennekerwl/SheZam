@@ -2,6 +2,7 @@ package com.shezam.core
 
 class SheBopMatcher(
     private val decisionThreshold: Double = 0.55,
+    private val minimumOffsetMarginRatio: Double = 1.10,
 ) {
     fun match(observed: List<FingerprintToken>, reference: List<FingerprintToken>): MatchResult {
         if (observed.isEmpty() || reference.isEmpty()) {
@@ -20,12 +21,15 @@ class SheBopMatcher(
             }
         }
 
-        val strongest = votes.maxOfOrNull { it.value } ?: 0
+        val sortedVotes = votes.values.sortedDescending()
+        val strongest = sortedVotes.firstOrNull() ?: 0
+        val secondStrongest = sortedVotes.getOrNull(1) ?: 0
         val confidence = strongest.toDouble() / observed.size.toDouble()
+        val offsetMarginRatio = if (secondStrongest == 0) Double.POSITIVE_INFINITY else strongest.toDouble() / secondStrongest.toDouble()
         return MatchResult(
             confidence = confidence,
             strongestOffsetVotes = strongest,
-            isMatch = confidence >= decisionThreshold,
+            isMatch = confidence >= decisionThreshold && offsetMarginRatio >= minimumOffsetMarginRatio,
         )
     }
 }
